@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------
-#  persistence_homology.py   —  CLEANED + BUG-FIXED (22 Jul 2025)
+#  persistent_homology.py   —  CLEANED + BUG-FIXED (22 Jul 2025)
 # ---------------------------------------------------------------------
 from typing import List, Dict
 import logging
@@ -14,32 +14,46 @@ class BettiZero:
 
     # ---------- disjoint-set ----------
     class UnionFind:
+        __slots__ = ('parent', 'rank')
+
         def __init__(self, vertices: list[dict]):
-            self.parent = list(range(len(vertices)))
-            self.rank = list(range(len(vertices)))
+            n = len(vertices)
+            # same initialization as before
+            self.parent = list(range(n))
+            self.rank   = list(range(n))
 
-        def find(self, x):
-            if self.parent[x] != x:
-                self.parent[x] = self.find(self.parent[x])
-            return self.parent[x]
+        def find(self, x: int) -> int:
+            parent = self.parent
+            # path-halving: each step we jump up two levels
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
 
-        def union(self, x, y):
+        def union(self, x: int, y: int) -> dict[int, dict[str, int]]:
             rootX = self.find(x)
             rootY = self.find(y)
             rankX = self.rank[rootX]
             rankY = self.rank[rootY]
-            if rootX == rootY:
-                return {x: {'root': rootX, 'rank': rankX}, y: {'root': rootY, 'rank': rankY}}
 
-            # Union by rank: attach the smaller tree under the larger tree
-            if rankX > rankY:
-                self.parent[rootX] = rootY
-            elif rankX < rankY:
-                self.parent[rootY] = rootX
-            else:
-                # If ranks are equal, default to the first.
-                self.parent[rootY] = rootX
-            return {x: {'root': rootX, 'rank': rankX}, y: {'root': rootY, 'rank': rankY}}
+            # prepare the exact same return value as before
+            result = {
+                x: {'root': rootX, 'rank': rankX},
+                y: {'root': rootY, 'rank': rankY},
+            }
+
+            # only change parent pointers if they're in different sets
+            if rootX != rootY:
+                # preserves your logic:
+                #   if rankX > rankY: attach rootX under rootY
+                #   otherwise          : attach rootY under rootX
+                if rankX > rankY:
+                    self.parent[rootX] = rootY
+                else:
+                    self.parent[rootY] = rootX
+
+            return result
+
         
     # ---------- life-cycle ----------
     def __init__(self, direction, vertices, edges):
@@ -105,11 +119,16 @@ class BettiZero:
     @staticmethod
     def compute_components(vertices, old_components, uf):
         comps = old_components
+        find = uf.find
         for v in vertices:
             node = v['new_index']
-            root = uf.find(node)
-            comps.setdefault(root, []).append(node)
+            root = find(node)
+            try:
+                comps[root].append(node)
+            except KeyError:
+                comps[root] = [node]
         return comps
+
 
     @staticmethod
     def compute_new_births(vertices, uf):
@@ -135,7 +154,7 @@ def compute_largest_bar(intervals):
     longest = max(intervals, key=length_of_interval)
     return length_of_interval(longest), longest
 
-def n_longest_intervals_sorted(intervals, n):
+def compute_n_largest_bars(intervals, n):
     # Keep only finite intervals
     finite = [
         (s, e) 
@@ -149,43 +168,57 @@ def n_longest_intervals_sorted(intervals, n):
 # Preprocessing
 
 def make_filtration(vertices, edges, direction):
-    points = [[vertex, [0, 0, 0]] for vertex in vertices]
-    pre_edges = edges
-    pre_formatted_edges = []
-    for edge in pre_edges:
-        x, y = edge
-        pre_formatted_edges.append([[x, y], [1, 1, 1]])
-    pre_vertices = append_height_vertices(direction, points)
-    vertices = format_vertices(pre_vertices)
-    edges = format_edges(vertices, pre_formatted_edges)
-    pre_graph = process_graph(vertices, edges, direction)
-    graph = pre_graph['signed_graph']
-    original_to_new_indices = pre_graph['index_translation']
-    new_to_original_indices = {v: k for k, v in original_to_new_indices.items()}
-    filtration = group_events_by_height(graph[0], graph[1])
-    return filtration, new_to_original_indices
+    ahv = append_height_vertices
+    fv  = format_vertices
+    fe  = format_edges
+    pg  = process_graph
+    ge  = group_events_by_height
+
+    # build the “raw” point and edge lists
+    pts = [[v, [0, 0, 0]] for v in vertices]
+    eds = [[[x, y], [1, 1, 1]] for x, y in edges]
+
+    # pipeline
+    verts   = fv(ahv(direction, pts))
+    eds2    = fe(verts, eds)
+    pre     = pg(verts, eds2, direction)
+    sg, idx = pre['signed_graph'], pre['index_translation']
+    inv_idx = {new: orig for orig, new in idx.items()}
+    filtr   = ge(sg[0], sg[1])
+
+    return filtr, inv_idx
+
 
 
 def group_events_by_height(points, edges):
-    """
-    Input is a set of points, and a set of edges.
-    Returns a dict of the form:
-    
-    """
-    events_by_height = {}
-    for point in points:
-        h = point['height']
-        events_by_height.setdefault(h, {'points': [], 'horizontal_edges': [], 'vertical_edges': []})
-        events_by_height[h]['points'].append(point)
+    events = {}
+    # add points
+    for p in points:
+        h = p['height']
+        bucket = events.get(h)
+        if bucket is None:
+            bucket = {'points': [], 'horizontal_edges': [], 'vertical_edges': []}
+            events[h] = bucket
+        bucket['points'].append(p)
 
-    for edge in edges:
-        h = max(edge['height'])
-        events_by_height.setdefault(h, {'points': [], 'horizontal_edges': [], 'vertical_edges': []})
-        if min(edge['height'])==max(edge['height']):
-            events_by_height[h]['horizontal_edges'].append(edge)
+    # add edges
+    for e in edges:
+        h0, h1 = e['height']
+        # same as max(), but a tiny bit faster
+        h = h1 if h1 > h0 else h0
+
+        bucket = events.get(h)
+        if bucket is None:
+            bucket = {'points': [], 'horizontal_edges': [], 'vertical_edges': []}
+            events[h] = bucket
+
+        if h0 == h1:
+            bucket['horizontal_edges'].append(e)
         else:
-            events_by_height[h]['vertical_edges'].append(edge)
-    return events_by_height
+            bucket['vertical_edges'].append(e)
+
+    return events
+
 
 
 
