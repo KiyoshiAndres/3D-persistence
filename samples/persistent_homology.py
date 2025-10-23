@@ -84,7 +84,7 @@ class BettiZero:
             all_vertices.extend(verts)
 
             # 3 propagate components upward
-            components = self.compute_components(all_vertices, components, self.uf)
+            components = self.compute_components(verts, components, self.uf)
 
             # 4 new births *inside* the slice
             births.extend(self.compute_new_births(verts, self.uf))
@@ -171,7 +171,7 @@ def make_filtration(vertices, edges, direction):
     ahv = append_height_vertices
     fv  = format_vertices
     fe  = format_edges
-    pg  = process_graph
+    og  = order_graph
     ge  = group_events_by_height
 
     # build the “raw” point and edge lists
@@ -181,10 +181,10 @@ def make_filtration(vertices, edges, direction):
     # pipeline
     verts   = fv(ahv(direction, pts))
     eds2    = fe(verts, eds)
-    pre     = pg(verts, eds2, direction)
-    sg, idx = pre['signed_graph'], pre['index_translation']
+    graph     = og(verts, eds2)
+    idx = graph['index_translation']
     inv_idx = {new: orig for orig, new in idx.items()}
-    filtr   = ge(sg[0], sg[1])
+    filtr   = ge(graph['vertices'], graph['edges'])
 
     return filtr, inv_idx
 
@@ -219,20 +219,6 @@ def group_events_by_height(points, edges):
 
     return events
 
-
-
-
-def process_graph(vertices, edges, direction):
-    """
-        The input are vertices and edges and a direction.
-        
-        The output is a graph ordered by height, and by x,y,z. The normal vectors are replaced with the sign.
-    """
-    processed_graph = order_graph(vertices, edges)
-    graph = [processed_graph['vertices'], processed_graph['edges']]
-    signed_graph = obtain_sign(graph, direction)
-    return {'signed_graph': signed_graph, 'index_translation': processed_graph['index_translation']}
-
 def subdivide_edges(edges: list) -> list:
     '''Input: List of edges formated as 
     edge = ['vertices': [index_i, index_j], 'height': [height_i, height_j], 'n': n]
@@ -248,34 +234,11 @@ def subdivide_edges(edges: list) -> list:
             angled_edges.append(edge)
     return [horizontal_edges, angled_edges]
 
-# obtain_sign, sign, and order_graph are helper functions for process_graph. 
-
-def obtain_sign(graph, direction: list) -> list:
-    points, edges = graph
-    signed_points = []
-    signed_edges = []
-    for point in points:
-        point['sign'] = sign(point['normal'], direction)
-        del point['normal']
-        signed_points.append(point)
-    for e in edges:
-        signed_edges.append({'vertices': e['vertices'], 'height': e['height'], 'sign': sign(e['n'], direction)})
-    return [signed_points, signed_edges]
-
-def sign(v_1,v_2):
-    product = v_1[0] * v_2[0] +  v_1[1] * v_2[1] + v_1[2] * v_2[2]
-    sign = 0
-    if product > 0:
-        sign = 1
-    elif product < 0:
-        sign = -1
-    return sign
-
 def order_graph(vertices, edges):
     """
         The input are vertices and edges.
-        {'coordinates': [i, j, k], 'original_index': idx, 'new_index': idx, 'height': h, 'normal': n}
-        {'vertices': [e, l], 'height': [h_0,h_1], 'n': n}
+        {'coordinates': [i, j, k], 'original_index': idx, 'new_index': idx, 'height': h}
+        {'vertices': [e, l], 'height': [h_0,h_1]}
         
         The output is a graph ordered by height, and by x,y,z.
     """
@@ -292,9 +255,7 @@ def order_graph(vertices, edges):
         original_index = vertex['original_index']
         original_to_new_index[original_index] = new_index
         vertex['new_index'] = new_index
-
-
-    
+ 
     # Step 3: Update the edges
     for edge in edges:
         # Map old indices to new indices and sort them within the edge
@@ -307,7 +268,7 @@ def order_graph(vertices, edges):
     )
     
     output_vertices = [ v for v in sorted_vertices ]
-    output_edges = [ {'vertices': e['vertices'], 'height': e['height'], 'n': e['n'] } for e in sorted_edges ]
+    output_edges = [ {'vertices': e['vertices'], 'height': e['height']} for e in sorted_edges ]
     return {'vertices': output_vertices, 'edges': output_edges, 'index_translation': original_to_new_index}
 
 def height_of_vertex(direction, point):
@@ -321,15 +282,14 @@ def append_height_vertices(direction, vertices):
     return [[p.tolist(), h, n] for p, h, n in zip(pts, heights, (v[1] for v in vertices))]
 
 def format_vertices(vertices: list) -> list:
-    # Input: [coord, height, vector n]
+    # Input: [coord, height]
     new_vertices = []
     n = 0
     for vertex in vertices:
         new_vertices.append({'coordinates': vertex[0], 
                              'original_index': n, 
                              'new_index': None,
-                             'height': vertex[1],
-                             'normal': vertex[2]
+                             'height': vertex[1]
                             })
         n += 1
     return new_vertices
@@ -343,7 +303,7 @@ def format_edges(points: list, edges: list) -> list:
         r_vertex_index = edge[0][1]
         l_height = points[l_vertex_index]['height']
         r_height = points[r_vertex_index]['height']
-        formatted_edges.append({'vertices': [l_vertex_index, r_vertex_index], 'height': [l_height, r_height], 'n': edge[1]})
+        formatted_edges.append({'vertices': [l_vertex_index, r_vertex_index], 'height': [l_height, r_height]})
     return formatted_edges
 
 
@@ -358,9 +318,6 @@ def reindex_edges(edges: list[int, int]) -> list[int, int]:
     for edge in edges:
         reindexed_edges.append([edge[0] - 1, edge[1] - 1])
     return reindexed_edges
-
-
-
 
 
 # Sphere Coverings
